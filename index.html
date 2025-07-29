@@ -17,7 +17,7 @@
             background-color: #e0f2fe;
             border-color: #0284c7;
         }
-        #error-message, #loading-indicator, #staging-area {
+        #error-message, #loading-indicator, #staging-area, #confirm-modal {
             display: none;
         }
         .spinner {
@@ -31,6 +31,18 @@
             border-top: 3px solid #e5e7eb; /* gray-200 */
             border-bottom: 1px solid #e5e7eb;
             background-color: #f9fafb; /* gray-50 */
+        }
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 50;
         }
     </style>
 </head>
@@ -111,14 +123,11 @@
                     <table id="results-table" class="min-w-full">
                         <thead class="bg-gray-50">
                             <tr>
-                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Uploader ID</th>
-                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Slice</th>
                                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Side</th>
                                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Annotation</th>
                                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ci Score</th>
                                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
-                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Score</th>
-                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Uploader ID</th>
                             </tr>
                         </thead>
                         <tbody id="results-body" class="bg-white divide-y divide-gray-200">
@@ -129,11 +138,24 @@
         </main>
     </div>
 
+    <!-- Confirmation Modal -->
+    <div id="confirm-modal" class="modal-overlay">
+        <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-sm">
+            <h3 class="text-lg font-bold mb-4" id="modal-title">Confirm Deletion</h3>
+            <p id="modal-text" class="text-gray-600 mb-6">Are you sure you want to delete all entries for this file?</p>
+            <div class="flex justify-end gap-4">
+                <button id="modal-cancel-btn" class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-lg">Cancel</button>
+                <button id="modal-confirm-btn" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg">Delete</button>
+            </div>
+        </div>
+    </div>
+
+
     <script type="module">
         // --- Firebase Imports ---
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, serverTimestamp, doc, deleteDoc, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, onSnapshot, query, serverTimestamp, doc, deleteDoc, writeBatch, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- PASTE YOUR FIREBASE CONFIGURATION OBJECT HERE ---
         const firebaseConfig = {
@@ -162,6 +184,10 @@
         const stagingBody = document.getElementById('staging-body');
         const saveUploadBtn = document.getElementById('save-upload-btn');
         const cancelUploadBtn = document.getElementById('cancel-upload-btn');
+        const confirmModal = document.getElementById('confirm-modal');
+        const modalConfirmBtn = document.getElementById('modal-confirm-btn');
+        const modalCancelBtn = document.getElementById('modal-cancel-btn');
+        const modalText = document.getElementById('modal-text');
 
 
         let db, auth;
@@ -169,6 +195,7 @@
         let allAnnotations = [];
         let stagedAnnotations = [];
         let unsubscribeFromAnnotations = null;
+        let fileToDelete = null;
 
         // --- Firebase Initialization and Authentication ---
         async function initializeFirebase() {
@@ -240,7 +267,7 @@
             const annotationsCollection = collection(db, "annotations");
 
             stagedAnnotations.forEach(item => {
-                const docRef = doc(annotationsCollection); // Create a new doc reference
+                const docRef = doc(annotationsCollection);
                 batch.set(docRef, {
                     ...item,
                     uploaderId: currentUserId,
@@ -257,13 +284,28 @@
             }
         }
 
-        async function deleteAnnotation(docId) {
-            const annotationsCollectionPath = "annotations";
+        async function deleteFileAnnotations(filename) {
+            if (!filename) return;
+
+            const annotationsCollection = collection(db, "annotations");
+            const q = query(annotationsCollection, where("filename", "==", filename), where("uploaderId", "==", currentUserId));
+
             try {
-                await deleteDoc(doc(db, annotationsCollectionPath, docId));
+                const querySnapshot = await getDocs(q);
+                if (querySnapshot.empty) {
+                    console.log("No documents found for this file to delete.");
+                    return;
+                }
+
+                const batch = writeBatch(db);
+                querySnapshot.forEach(doc => {
+                    batch.delete(doc.ref);
+                });
+                
+                await batch.commit();
             } catch (error) {
-                console.error("Error deleting document: ", error);
-                showError("Failed to delete annotation.");
+                console.error("Error deleting file annotations: ", error);
+                showError("Failed to delete the file's annotations.");
             }
         }
 
@@ -295,16 +337,15 @@
             }
 
             const leftTotalAnnotation = landmarkData.find(d => d.text.toLowerCase().includes('total') && d.pos < 400);
-            if(leftTotalAnnotation) leftTotal = leftTotalAnnotation.text;
+            if(leftTotalAnnotation) leftTotal = leftTotalAnnotation.text; // Keep full text
 
             const rightTotalAnnotation = landmarkData.find(d => d.text.toLowerCase().includes('total') && d.pos >= 400);
-            if(rightTotalAnnotation) rightTotal = rightTotalAnnotation.text;
+            if(rightTotalAnnotation) rightTotal = rightTotalAnnotation.text; // Keep full text
 
             landmarkData.forEach(({ text, pos }) => {
                 if (text.toLowerCase().startsWith('total=')) return;
 
                 const side = pos < 400 ? 'Left' : 'Right';
-                const totalScore = side === 'Left' ? leftTotal : rightTotal;
                 const ciMatch = text.match(/Ci=(\d+)/);
                 const annotationMatch = text.match(/^(\d+)\./);
                 const descriptionMatch = text.match(/\((.*)\)/);
@@ -312,10 +353,11 @@
                 annotations.push({
                     slice: slicePosition,
                     side,
-                    annotation: annotationMatch ? annotationMatch[1] : 'N/A',
+                    annotation: annotationMatch ? parseInt(annotationMatch[1], 10) : 'N/A',
                     ciScore: ciMatch ? ciMatch[1] : 'N/A',
                     description: descriptionMatch ? descriptionMatch[1] : text,
-                    totalScore
+                    leftTotal,
+                    rightTotal
                 });
             });
             return annotations;
@@ -334,31 +376,46 @@
             const sortedFilenames = Object.keys(groupedByFile).sort();
 
             sortedFilenames.forEach((filename) => {
+                const annotationsInFile = groupedByFile[filename];
+                const userOwnsFile = annotationsInFile.some(item => item.uploaderId === currentUserId);
+                
+                const firstItem = annotationsInFile[0] || {};
+                const leftTotal = firstItem.leftTotal || 'N/A';
+                const rightTotal = firstItem.rightTotal || 'N/A';
+
                 const titleRow = document.createElement('tr');
                 titleRow.classList.add('file-title-row');
-                titleRow.innerHTML = `<td colspan="8" class="px-6 py-3 text-base font-bold text-gray-900">${filename}</td>`;
+                
+                let deleteFileButtonHtml = '';
+                if (userOwnsFile) {
+                    deleteFileButtonHtml = `<button data-filename="${filename}" class="delete-file-btn text-red-600 hover:text-red-900 text-xs font-normal ml-4">(Delete Entire File)</button>`;
+                }
+
+                titleRow.innerHTML = `
+                    <td colspan="5" class="px-6 py-3">
+                        <div class="font-bold text-base text-gray-900">${filename}</div>
+                        <div class="text-xs text-gray-600">
+                            <span class="font-semibold text-blue-600">Left:</span> ${leftTotal} | 
+                            <span class="font-semibold text-green-600">Right:</span> ${rightTotal}
+                            ${deleteFileButtonHtml}
+                        </div>
+                    </td>`;
                 resultsTableBody.appendChild(titleRow);
 
-                const annotationsInFile = groupedByFile[filename];
-                annotationsInFile.sort((a,b) => a.annotation - b.annotation);
+                annotationsInFile.sort((a,b) => {
+                    if (a.side < b.side) return -1;
+                    if (a.side > b.side) return 1;
+                    return a.annotation - b.annotation;
+                });
 
                 annotationsInFile.forEach(item => {
                     const row = document.createElement('tr');
-                    
-                    let deleteButtonHtml = '';
-                    if (item.uploaderId === currentUserId) {
-                        deleteButtonHtml = `<button data-id="${item.id}" class="delete-btn text-red-600 hover:text-red-900">Delete</button>`;
-                    }
-
                     row.innerHTML = `
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 truncate" style="max-width: 150px;" title="${item.uploaderId}">${item.uploaderId}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-700">${item.slice}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm font-medium ${item.side === 'Left' ? 'text-blue-600' : 'text-green-600'}">${item.side}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.annotation}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.ciScore}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${item.description}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${item.totalScore}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">${deleteButtonHtml}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 truncate" style="max-width: 150px;" title="${item.uploaderId}">${item.uploaderId}</td>
                     `;
                     resultsTableBody.appendChild(row);
                 });
@@ -367,6 +424,12 @@
         
         function renderStagingArea() {
             stagingBody.innerHTML = '';
+            stagedAnnotations.sort((a,b) => {
+                    if (a.side < b.side) return -1;
+                    if (a.side > b.side) return 1;
+                    return a.annotation - b.annotation;
+                });
+
             stagedAnnotations.forEach(item => {
                 const row = document.createElement('tr');
                 row.innerHTML = `
@@ -376,7 +439,7 @@
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.annotation}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.ciScore}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${item.description}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${item.totalScore}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">Left: ${item.leftTotal} | Right: ${item.rightTotal}</td>
                 `;
                 stagingBody.appendChild(row);
             });
@@ -389,7 +452,7 @@
             stagingBody.innerHTML = '';
             stagingArea.style.display = 'none';
             fileDropArea.style.display = 'block';
-            fileInput.value = ''; // Reset file input
+            fileInput.value = '';
         }
 
         // --- UI and Event Handlers ---
@@ -405,12 +468,24 @@
         fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
         
         resultsTableBody.addEventListener('click', (e) => {
-            if (e.target.classList.contains('delete-btn')) {
-                const docId = e.target.getAttribute('data-id');
-                if (docId) {
-                    deleteAnnotation(docId);
-                }
+            if (e.target.classList.contains('delete-file-btn')) {
+                fileToDelete = e.target.getAttribute('data-filename');
+                modalText.textContent = `Are you sure you want to delete all entries for the file "${fileToDelete}"? This action cannot be undone.`;
+                confirmModal.style.display = 'flex';
             }
+        });
+
+        modalCancelBtn.addEventListener('click', () => {
+            fileToDelete = null;
+            confirmModal.style.display = 'none';
+        });
+
+        modalConfirmBtn.addEventListener('click', () => {
+            if (fileToDelete) {
+                deleteFileAnnotations(fileToDelete);
+            }
+            fileToDelete = null;
+            confirmModal.style.display = 'none';
         });
 
         saveUploadBtn.addEventListener('click', saveStagedAnnotations);
@@ -445,11 +520,13 @@
         // --- CSV Export ---
         exportBtn.addEventListener('click', () => {
             if (allAnnotations.length === 0) { showError("No data to export."); return; }
-            const headers = ['Uploader_ID', 'Filename', 'Slice', 'Side', 'Annotation', 'Ci_Score', 'Description', 'Total_Score'];
+            const headers = ['Uploader_ID', 'Filename', 'Slice', 'Side', 'Annotation', 'Ci_Score', 'Description', 'Left_Total', 'Right_Total'];
             
             allAnnotations.sort((a, b) => {
                 if (a.filename < b.filename) return -1;
                 if (a.filename > b.filename) return 1;
+                if (a.side < b.side) return -1;
+                if (a.side > b.side) return 1;
                 return a.annotation - b.annotation;
             });
 
@@ -463,7 +540,8 @@
                     row.annotation,
                     row.ciScore,
                     `"${(row.description || '').replace(/"/g, '""')}"`,
-                    `"${(row.totalScore || '').replace(/"/g, '""')}"`
+                    `"${(row.leftTotal || 'N/A').replace(/"/g, '""')}"`,
+                    `"${(row.rightTotal || 'N/A').replace(/"/g, '""')}"`
                 ].join(','))
             ].join('\n');
             const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
