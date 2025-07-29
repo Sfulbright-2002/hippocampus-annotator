@@ -17,7 +17,7 @@
             background-color: #e0f2fe;
             border-color: #0284c7;
         }
-        #error-message, #loading-indicator {
+        #error-message, #loading-indicator, #staging-area {
             display: none;
         }
         .spinner {
@@ -61,6 +61,33 @@
                     </label>
                 </div>
             </div>
+            
+            <!-- Staging Area for Uploaded Files -->
+            <div id="staging-area" class="mb-8">
+                <h2 class="text-2xl font-bold text-gray-900 mb-4">Preview Upload</h2>
+                <div class="bg-white shadow-md rounded-lg overflow-x-auto">
+                    <table id="staging-table" class="min-w-full">
+                         <thead class="bg-gray-50">
+                            <tr>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Filename</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Slice</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Side</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Annotation</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ci Score</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Score</th>
+                            </tr>
+                        </thead>
+                        <tbody id="staging-body" class="bg-white divide-y divide-gray-200">
+                        </tbody>
+                    </table>
+                </div>
+                <div class="mt-4 flex justify-end gap-4">
+                    <button id="cancel-upload-btn" class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-lg">Cancel</button>
+                    <button id="save-upload-btn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow-md">Save to Database</button>
+                </div>
+            </div>
+
 
             <!-- Messages and Loaders -->
             <div id="error-message" class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg relative mb-6" role="alert">
@@ -91,10 +118,10 @@
                                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ci Score</th>
                                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
                                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Score</th>
+                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                             </tr>
                         </thead>
                         <tbody id="results-body" class="bg-white divide-y divide-gray-200">
-                            <!-- Data rows will be inserted here from Firestore -->
                         </tbody>
                     </table>
                 </div>
@@ -106,10 +133,9 @@
         // --- Firebase Imports ---
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, serverTimestamp, doc, deleteDoc, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- PASTE YOUR FIREBASE CONFIGURATION OBJECT HERE ---
-        // This object is provided by Firebase when you create a web app.
         const firebaseConfig = {
           apiKey: "AIzaSyCPwlkunmJ1DGuQrR1IDld4f1ge_d3avvg",
           authDomain: "hippocampus-annotations.firebaseapp.com",
@@ -120,30 +146,35 @@
         };
         // ----------------------------------------------------
 
-
         // --- DOM Element References ---
+        const resultsTableBody = document.getElementById('results-body');
         const fileDropArea = document.getElementById('file-drop-area');
         const fileInput = document.getElementById('file-input');
         const fileLabel = document.getElementById('file-label');
         const uploadText = document.getElementById('upload-text');
-        const resultsTableBody = document.getElementById('results-body');
         const dataSection = document.getElementById('data-section');
         const exportBtn = document.getElementById('export-csv');
         const errorMessageDiv = document.getElementById('error-message');
         const errorTextSpan = document.getElementById('error-text');
         const loadingIndicator = document.getElementById('loading-indicator');
         const authStatusDiv = document.getElementById('auth-status');
+        const stagingArea = document.getElementById('staging-area');
+        const stagingBody = document.getElementById('staging-body');
+        const saveUploadBtn = document.getElementById('save-upload-btn');
+        const cancelUploadBtn = document.getElementById('cancel-upload-btn');
+
 
         let db, auth;
         let currentUserId = null;
         let allAnnotations = [];
+        let stagedAnnotations = [];
         let unsubscribeFromAnnotations = null;
 
         // --- Firebase Initialization and Authentication ---
         async function initializeFirebase() {
             try {
                 if (!firebaseConfig.apiKey) {
-                    showError("Firebase configuration is missing. The application cannot connect to the database. Please paste your config object from Firebase into the index.html file.");
+                    showError("Firebase configuration is missing. Please paste your config object from Firebase into the index.html file.");
                     return;
                 }
                 
@@ -185,7 +216,7 @@
             loadingIndicator.style.display = 'block';
             dataSection.classList.add('hidden');
 
-            const annotationsCollectionPath = "annotations"; // Using a simple root collection
+            const annotationsCollectionPath = "annotations";
             const q = query(collection(db, annotationsCollectionPath));
 
             if (unsubscribeFromAnnotations) unsubscribeFromAnnotations();
@@ -202,17 +233,37 @@
             });
         }
 
-        async function saveAnnotation(annotationData) {
-            const annotationsCollectionPath = "annotations";
-            try {
-                await addDoc(collection(db, annotationsCollectionPath), {
-                    ...annotationData,
+        async function saveStagedAnnotations() {
+            if (stagedAnnotations.length === 0) return;
+            
+            const batch = writeBatch(db);
+            const annotationsCollection = collection(db, "annotations");
+
+            stagedAnnotations.forEach(item => {
+                const docRef = doc(annotationsCollection); // Create a new doc reference
+                batch.set(docRef, {
+                    ...item,
                     uploaderId: currentUserId,
                     createdAt: serverTimestamp()
                 });
+            });
+
+            try {
+                await batch.commit();
+                clearStagingArea();
             } catch (error) {
-                console.error("Error adding document: ", error);
-                showError(`Failed to save annotation for ${annotationData.filename}.`);
+                console.error("Error saving batch: ", error);
+                showError("Failed to save the uploaded file to the database.");
+            }
+        }
+
+        async function deleteAnnotation(docId) {
+            const annotationsCollectionPath = "annotations";
+            try {
+                await deleteDoc(doc(db, annotationsCollectionPath, docId));
+            } catch (error) {
+                console.error("Error deleting document: ", error);
+                showError("Failed to delete annotation.");
             }
         }
 
@@ -285,7 +336,7 @@
             sortedFilenames.forEach((filename) => {
                 const titleRow = document.createElement('tr');
                 titleRow.classList.add('file-title-row');
-                titleRow.innerHTML = `<td colspan="7" class="px-6 py-3 text-base font-bold text-gray-900">${filename}</td>`;
+                titleRow.innerHTML = `<td colspan="8" class="px-6 py-3 text-base font-bold text-gray-900">${filename}</td>`;
                 resultsTableBody.appendChild(titleRow);
 
                 const annotationsInFile = groupedByFile[filename];
@@ -293,6 +344,12 @@
 
                 annotationsInFile.forEach(item => {
                     const row = document.createElement('tr');
+                    
+                    let deleteButtonHtml = '';
+                    if (item.uploaderId === currentUserId) {
+                        deleteButtonHtml = `<button data-id="${item.id}" class="delete-btn text-red-600 hover:text-red-900">Delete</button>`;
+                    }
+
                     row.innerHTML = `
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 truncate" style="max-width: 150px;" title="${item.uploaderId}">${item.uploaderId}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-700">${item.slice}</td>
@@ -301,12 +358,40 @@
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.ciScore}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${item.description}</td>
                         <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${item.totalScore}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">${deleteButtonHtml}</td>
                     `;
                     resultsTableBody.appendChild(row);
                 });
             });
         }
         
+        function renderStagingArea() {
+            stagingBody.innerHTML = '';
+            stagedAnnotations.forEach(item => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${item.filename}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-700">${item.slice}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium ${item.side === 'Left' ? 'text-blue-600' : 'text-green-600'}">${item.side}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.annotation}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.ciScore}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${item.description}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${item.totalScore}</td>
+                `;
+                stagingBody.appendChild(row);
+            });
+            stagingArea.style.display = 'block';
+            fileDropArea.style.display = 'none';
+        }
+
+        function clearStagingArea() {
+            stagedAnnotations = [];
+            stagingBody.innerHTML = '';
+            stagingArea.style.display = 'none';
+            fileDropArea.style.display = 'block';
+            fileInput.value = ''; // Reset file input
+        }
+
         // --- UI and Event Handlers ---
         function enableFileUpload() {
             fileInput.disabled = false;
@@ -318,24 +403,40 @@
         fileDropArea.addEventListener('dragleave', () => fileDropArea.classList.remove('dragover'));
         fileDropArea.addEventListener('drop', (e) => { e.preventDefault(); fileDropArea.classList.remove('dragover'); if (!fileInput.disabled) handleFiles(e.dataTransfer.files); });
         fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+        
+        resultsTableBody.addEventListener('click', (e) => {
+            if (e.target.classList.contains('delete-btn')) {
+                const docId = e.target.getAttribute('data-id');
+                if (docId) {
+                    deleteAnnotation(docId);
+                }
+            }
+        });
+
+        saveUploadBtn.addEventListener('click', saveStagedAnnotations);
+        cancelUploadBtn.addEventListener('click', clearStagingArea);
 
         async function handleFiles(files) {
             hideError();
             const annotFiles = Array.from(files).filter(file => file.name.endsWith('.annot'));
             if (annotFiles.length === 0) { showError("No .annot files were selected."); return; }
-
+            
+            stagedAnnotations = [];
             for (const file of annotFiles) {
                 try {
                     const fileContent = await file.text();
                     const parsedData = parseAnnotFile(fileContent);
-                    for (const item of parsedData) {
-                        await saveAnnotation({ filename: file.name, ...item });
-                    }
+                    parsedData.forEach(item => {
+                        stagedAnnotations.push({ filename: file.name, ...item });
+                    });
                 } catch (error) {
                     console.error("Error processing file:", file.name, error);
-                    showError(`Failed to parse and save ${file.name}. It might be corrupted or invalid.`);
+                    showError(`Failed to parse ${file.name}. It might be corrupted or invalid.`);
+                    clearStagingArea();
+                    return;
                 }
             }
+            renderStagingArea();
         }
 
         function showError(message) { errorTextSpan.textContent = message; errorMessageDiv.style.display = 'block'; }
@@ -380,4 +481,3 @@
     </script>
 </body>
 </html>
-```
