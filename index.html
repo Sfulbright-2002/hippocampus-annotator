@@ -28,7 +28,11 @@
             to { transform: rotate(360deg); }
         }
         .file-title-row td {
-            border-top: 3px solid #e5e7eb; /* gray-200 */
+            border-top: 3px solid #6b7280; /* gray-500 */
+            background-color: #d1d5db; /* gray-300 */
+        }
+        .slice-title-row td {
+            border-top: 2px solid #e5e7eb; /* gray-200 */
             border-bottom: 1px solid #e5e7eb;
             background-color: #f9fafb; /* gray-50 */
         }
@@ -87,7 +91,6 @@
                                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Annotation</th>
                                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ci Score</th>
                                 <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
-                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Score</th>
                             </tr>
                         </thead>
                         <tbody id="staging-body" class="bg-white divide-y divide-gray-200">
@@ -309,58 +312,63 @@
             }
         }
 
-        // --- Parsing Logic ---
+        // --- Parsing Logic (Multi-Slice Aware with Z-Value Rounding) ---
         function parseAnnotFile(xmlContent) {
             const parser = new DOMParser();
             const xmlDoc = parser.parseFromString(xmlContent, "application/xml");
             if (xmlDoc.querySelector("parsererror")) throw new Error("XML parsing error.");
 
-            const landmarkAnnotations = xmlDoc.querySelectorAll('folder[key^="Element"]');
-            const annotations = [];
-            let leftTotal = "N/A", rightTotal = "N/A", slicePosition = "N/A";
-
-            const landmarkData = Array.from(landmarkAnnotations).map(folder => {
-                const typeEntry = folder.querySelector('entry[key="Type"]');
-                if (typeEntry?.getAttribute('value') === 'LandmarkAnnotation') {
-                    const textEntry = folder.querySelector('entry[key="Text"]');
-                    const posEntry = folder.querySelector('entry[key="Pos"]');
-                    if (textEntry && posEntry) {
-                        const posArray = posEntry.getAttribute('value').split(' ').map(Number);
-                        return { text: textEntry.getAttribute('value'), pos: posArray[0], slice: posArray[2] };
-                    }
-                }
-                return null;
-            }).filter(Boolean);
+            const allAnnotations = [];
             
-            if(landmarkData.length > 0) {
-                slicePosition = landmarkData[0].slice;
-            }
+            const allElements = Array.from(xmlDoc.querySelectorAll('folder[key^="Element"]')).map(element => {
+                const posEntry = element.querySelector('entry[key="Pos"], entry[key="Point1"]');
+                if (!posEntry) return null;
 
-            const leftTotalAnnotation = landmarkData.find(d => d.text.toLowerCase().includes('total') && d.pos < 400);
-            if(leftTotalAnnotation) leftTotal = leftTotalAnnotation.text; // Keep full text
+                const posArray = posEntry.getAttribute('value').split(' ').map(Number);
+                if (posArray.length !== 3) return null;
 
-            const rightTotalAnnotation = landmarkData.find(d => d.text.toLowerCase().includes('total') && d.pos >= 400);
-            if(rightTotalAnnotation) rightTotal = rightTotalAnnotation.text; // Keep full text
+                const textEntry = element.querySelector('entry[key="Text"]');
+                return {
+                    text: textEntry ? textEntry.getAttribute('value') : null,
+                    pos: posArray[0],
+                    slice: Math.round(posArray[2]), // Z-index rounded to nearest whole number
+                    isLandmark: !!textEntry
+                };
+            }).filter(Boolean);
 
-            landmarkData.forEach(({ text, pos }) => {
-                if (text.toLowerCase().startsWith('total=')) return;
+            const slices = [...new Set(allElements.map(el => el.slice))];
 
-                const side = pos < 400 ? 'Left' : 'Right';
-                const ciMatch = text.match(/Ci=(\d+)/);
-                const annotationMatch = text.match(/^(\d+)\./);
-                const descriptionMatch = text.match(/\((.*)\)/);
+            slices.forEach(slice => {
+                const elementsForSlice = allElements.filter(el => el.slice === slice);
+                const landmarksForSlice = elementsForSlice.filter(el => el.isLandmark);
 
-                annotations.push({
-                    slice: slicePosition,
-                    side,
-                    annotation: annotationMatch ? parseInt(annotationMatch[1], 10) : 'N/A',
-                    ciScore: ciMatch ? ciMatch[1] : 'N/A',
-                    description: descriptionMatch ? descriptionMatch[1] : text,
-                    leftTotal,
-                    rightTotal
+                const leftTotalAnnotation = landmarksForSlice.find(d => d.text.toLowerCase().includes('total') && d.pos < 400);
+                const leftTotal = leftTotalAnnotation ? leftTotalAnnotation.text : 'N/A';
+
+                const rightTotalAnnotation = landmarksForSlice.find(d => d.text.toLowerCase().includes('total') && d.pos >= 400);
+                const rightTotal = rightTotalAnnotation ? rightTotalAnnotation.text : 'N/A';
+
+                landmarksForSlice.forEach(({ text, pos }) => {
+                    if (text.toLowerCase().startsWith('total=')) return;
+
+                    const side = pos < 400 ? 'Left' : 'Right';
+                    const ciMatch = text.match(/Ci=(\d+)/);
+                    const annotationMatch = text.match(/^(\d+)\./);
+                    const descriptionMatch = text.match(/\((.*)\)/);
+
+                    allAnnotations.push({
+                        slice: slice,
+                        side,
+                        annotation: annotationMatch ? parseInt(annotationMatch[1], 10) : 'N/A',
+                        ciScore: ciMatch ? ciMatch[1] : 'N/A',
+                        description: descriptionMatch ? descriptionMatch[1] : text,
+                        leftTotal,
+                        rightTotal
+                    });
                 });
             });
-            return annotations;
+
+            return allAnnotations;
         }
 
         // --- Display Logic ---
@@ -377,47 +385,59 @@
 
             sortedFilenames.forEach((filename) => {
                 const annotationsInFile = groupedByFile[filename];
-                const userOwnsFile = annotationsInFile.some(item => item.uploaderId === currentUserId);
-                
-                const firstItem = annotationsInFile[0] || {};
-                const leftTotal = firstItem.leftTotal || 'N/A';
-                const rightTotal = firstItem.rightTotal || 'N/A';
+                const userOwnsFile = annotationsInFile.every(item => item.uploaderId === currentUserId);
 
-                const titleRow = document.createElement('tr');
-                titleRow.classList.add('file-title-row');
-                
+                const fileTitleRow = document.createElement('tr');
+                fileTitleRow.classList.add('file-title-row');
                 let deleteFileButtonHtml = '';
                 if (userOwnsFile) {
                     deleteFileButtonHtml = `<button data-filename="${filename}" class="delete-file-btn text-red-600 hover:text-red-900 text-xs font-normal ml-4">(Delete Entire File)</button>`;
                 }
+                fileTitleRow.innerHTML = `<td colspan="5" class="px-6 py-2 text-lg font-extrabold text-gray-900">${filename} ${deleteFileButtonHtml}</td>`;
+                resultsTableBody.appendChild(fileTitleRow);
 
-                titleRow.innerHTML = `
-                    <td colspan="5" class="px-6 py-3">
-                        <div class="font-bold text-base text-gray-900">${filename}</div>
-                        <div class="text-xs text-gray-600">
-                            <span class="font-semibold text-blue-600">Left:</span> ${leftTotal} | 
-                            <span class="font-semibold text-green-600">Right:</span> ${rightTotal}
-                            ${deleteFileButtonHtml}
-                        </div>
-                    </td>`;
-                resultsTableBody.appendChild(titleRow);
+                const groupedBySlice = annotationsInFile.reduce((acc, curr) => {
+                    (acc[curr.slice] = acc[curr.slice] || []).push(curr);
+                    return acc;
+                }, {});
 
-                annotationsInFile.sort((a,b) => {
-                    if (a.side < b.side) return -1;
-                    if (a.side > b.side) return 1;
-                    return a.annotation - b.annotation;
-                });
+                const sortedSlices = Object.keys(groupedBySlice).map(Number).sort((a, b) => a - b);
 
-                annotationsInFile.forEach(item => {
-                    const row = document.createElement('tr');
-                    row.innerHTML = `
-                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium ${item.side === 'Left' ? 'text-blue-600' : 'text-green-600'}">${item.side}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.annotation}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.ciScore}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${item.description}</td>
-                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 truncate" style="max-width: 150px;" title="${item.uploaderId}">${item.uploaderId}</td>
-                    `;
-                    resultsTableBody.appendChild(row);
+                sortedSlices.forEach(slice => {
+                    const annotationsInSlice = groupedBySlice[slice];
+                    const firstItem = annotationsInSlice[0] || {};
+                    const leftTotal = firstItem.leftTotal || 'N/A';
+                    const rightTotal = firstItem.rightTotal || 'N/A';
+
+                    const sliceTitleRow = document.createElement('tr');
+                    sliceTitleRow.classList.add('slice-title-row');
+                    sliceTitleRow.innerHTML = `
+                        <td colspan="5" class="px-6 py-3">
+                            <div class="font-bold text-base text-gray-800">Slice (Z-Index): ${slice}</div>
+                            <div class="text-xs text-gray-600">
+                                <span class="font-semibold text-blue-600">Left:</span> ${leftTotal} | 
+                                <span class="font-semibold text-green-600">Right:</span> ${rightTotal}
+                            </div>
+                        </td>`;
+                    resultsTableBody.appendChild(sliceTitleRow);
+                    
+                    annotationsInSlice.sort((a,b) => {
+                        if (a.side < b.side) return -1;
+                        if (a.side > b.side) return 1;
+                        return a.annotation - b.annotation;
+                    });
+
+                    annotationsInSlice.forEach(item => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium ${item.side === 'Left' ? 'text-blue-600' : 'text-green-600'}">${item.side}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.annotation}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.ciScore}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${item.description}</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 truncate" style="max-width: 150px;" title="${item.uploaderId}">${item.uploaderId}</td>
+                        `;
+                        resultsTableBody.appendChild(row);
+                    });
                 });
             });
         }
@@ -425,6 +445,8 @@
         function renderStagingArea() {
             stagingBody.innerHTML = '';
             stagedAnnotations.sort((a,b) => {
+                    if (a.slice < b.slice) return -1;
+                    if (a.slice > b.slice) return 1;
                     if (a.side < b.side) return -1;
                     if (a.side > b.side) return 1;
                     return a.annotation - b.annotation;
@@ -439,7 +461,6 @@
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.annotation}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.ciScore}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${item.description}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">Left: ${item.leftTotal} | Right: ${item.rightTotal}</td>
                 `;
                 stagingBody.appendChild(row);
             });
@@ -525,6 +546,8 @@
             allAnnotations.sort((a, b) => {
                 if (a.filename < b.filename) return -1;
                 if (a.filename > b.filename) return 1;
+                if (a.slice < b.slice) return -1;
+                if (a.slice > b.slice) return 1;
                 if (a.side < b.side) return -1;
                 if (a.side > b.side) return 1;
                 return a.annotation - b.annotation;
