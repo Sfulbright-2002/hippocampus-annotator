@@ -366,32 +366,68 @@
             return allAnnotations;
         }
 
-        // --- IHI Status Calculation ---
+        // --- IHI Status Calculation (UPDATED LOGIC) ---
         function calculateIHIStatus(annotationsForFile) {
             if (!annotationsForFile || annotationsForFile.length === 0) {
                 return 'N/A';
             }
 
-            const getSideStatus = (sideAnnotations) => {
-                if (sideAnnotations.length === 0) return 'Normal';
-                
-                const numericAnnotations = sideAnnotations
+            // Helper to determine status for the annotations on a single slice
+            const getStatusForSingleSlice = (sliceAnnotations) => {
+                const numericAnnotations = sliceAnnotations
                     .map(a => a.annotation)
                     .filter(a => typeof a === 'number' && !isNaN(a));
 
                 if (numericAnnotations.length === 0) return 'Normal';
-
                 if (numericAnnotations.every(a => a === 1)) return 'Normal';
                 if (numericAnnotations.every(a => a === 3)) return 'Complete IHI';
                 return 'Partial IHI';
             };
 
+            // Helper to determine the "average" (most frequent) status for a whole side
+            const getOverallSideStatus = (sideAnnotations) => {
+                if (sideAnnotations.length === 0) return 'Normal';
+
+                // 1. Group the side's annotations by slice number
+                const slices = sideAnnotations.reduce((acc, curr) => {
+                    (acc[curr.slice] = acc[curr.slice] || []).push(curr);
+                    return acc;
+                }, {});
+
+                // 2. Determine the IHI status for each slice
+                const sliceStatuses = Object.values(slices).map(getStatusForSingleSlice);
+                if (sliceStatuses.length === 0) return 'Normal';
+
+                // 3. Count the occurrences of each status to find the most frequent one (the mode)
+                const counts = sliceStatuses.reduce((acc, status) => {
+                    acc[status] = (acc[status] || 0) + 1;
+                    return acc;
+                }, {});
+
+                let maxCount = 0;
+                let modes = [];
+                for (const status in counts) {
+                    if (counts[status] > maxCount) {
+                        maxCount = counts[status];
+                        modes = [status];
+                    } else if (counts[status] === maxCount) {
+                        modes.push(status);
+                    }
+                }
+                
+                // 4. If there's a tie, use severity to break it. Otherwise, return the most frequent status.
+                if (modes.includes('Complete IHI')) return 'Complete IHI';
+                if (modes.includes('Partial IHI')) return 'Partial IHI';
+                return modes[0] || 'Normal';
+            };
+
             const leftAnnotations = annotationsForFile.filter(a => a.side === 'Left');
             const rightAnnotations = annotationsForFile.filter(a => a.side === 'Right');
-            const leftStatus = getSideStatus(leftAnnotations);
-            const rightStatus = getSideStatus(rightAnnotations);
 
-            // Severity hierarchy: Complete > Partial > Normal
+            const leftStatus = getOverallSideStatus(leftAnnotations);
+            const rightStatus = getOverallSideStatus(rightAnnotations);
+
+            // Combine Left and Right statuses using a severity hierarchy
             if (leftStatus === 'Complete IHI' || rightStatus === 'Complete IHI') return 'Complete IHI';
             if (leftStatus === 'Partial IHI' || rightStatus === 'Partial IHI') return 'Partial IHI';
             return 'Normal';
