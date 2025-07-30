@@ -27,6 +27,9 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+        .slice-title-row {
+            cursor: pointer;
+        }
         .slice-title-row td {
             border-top: 2px solid #e5e7eb; /* gray-200 */
             border-bottom: 1px solid #e5e7eb;
@@ -488,14 +491,23 @@
                     const leftTotal = firstItem.leftTotal || 'N/A';
                     const rightTotal = firstItem.rightTotal || 'N/A';
 
+                    // Unique ID for this slice's data rows
+                    const sliceDataClass = `slice-data-${filename.replace(/[^a-zA-Z0-9]/g, '')}-${slice}`;
+
                     const sliceTitleRow = document.createElement('tr');
                     sliceTitleRow.classList.add('slice-title-row');
+                    sliceTitleRow.dataset.toggleTarget = `.${sliceDataClass}`;
                     sliceTitleRow.innerHTML = `
                         <td colspan="5" class="px-6 py-3">
-                            <div class="font-bold text-base text-gray-800">Slice (Z-Index): ${slice}</div>
-                            <div class="text-xs text-gray-600">
-                                <span class="font-semibold text-blue-600">Left:</span> ${leftTotal} | 
-                                <span class="font-semibold text-green-600">Right:</span> ${rightTotal}
+                            <div class="flex justify-between items-center">
+                                <div>
+                                    <div class="font-bold text-base text-gray-800">Slice (Z-Index): ${slice}</div>
+                                    <div class="text-xs text-gray-600">
+                                        <span class="font-semibold text-blue-600">Left:</span> ${leftTotal} | 
+                                        <span class="font-semibold text-green-600">Right:</span> ${rightTotal}
+                                    </div>
+                                </div>
+                                <span class="toggle-icon text-gray-600 text-xl">►</span>
                             </div>
                         </td>`;
                     tbody.appendChild(sliceTitleRow);
@@ -508,6 +520,7 @@
 
                     annotationsInSlice.forEach(item => {
                         const row = document.createElement('tr');
+                        row.classList.add(sliceDataClass, 'hidden'); // Add class and hide by default
                         row.innerHTML = `
                             <td class="px-6 py-4 whitespace-nowrap text-sm font-medium ${item.side === 'Left' ? 'text-blue-600' : 'text-green-600'}">${item.side}</td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.annotation}</td>
@@ -568,6 +581,28 @@
         fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
         
         databaseContent.addEventListener('click', (e) => {
+            // Handle Slice Toggling
+            const sliceHeader = e.target.closest('.slice-title-row');
+            if (sliceHeader) {
+                const targetSelector = sliceHeader.dataset.toggleTarget;
+                const icon = sliceHeader.querySelector('.toggle-icon');
+                const dataRows = databaseContent.querySelectorAll(targetSelector);
+                
+                sliceHeader.classList.toggle('is-expanded');
+                
+                dataRows.forEach(row => {
+                    row.classList.toggle('hidden');
+                });
+
+                if (sliceHeader.classList.contains('is-expanded')) {
+                    icon.innerHTML = '▼';
+                } else {
+                    icon.innerHTML = '►';
+                }
+                return; // Prevent other handlers from firing
+            }
+
+            // Handle Deletion
             const deleteBtn = e.target.closest('.delete-file-btn');
             if (deleteBtn) {
                 fileToDelete = deleteBtn.getAttribute('data-filename');
@@ -576,6 +611,7 @@
                 return;
             }
 
+            // Handle Per-File Export
             const exportFileBtn = e.target.closest('.export-file-btn');
             if (exportFileBtn) {
                 const filename = exportFileBtn.getAttribute('data-filename');
