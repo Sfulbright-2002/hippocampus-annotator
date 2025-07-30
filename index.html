@@ -27,10 +27,6 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
-        .file-title-row td {
-            border-top: 3px solid #6b7280; /* gray-500 */
-            background-color: #d1d5db; /* gray-300 */
-        }
         .slice-title-row td {
             border-top: 2px solid #e5e7eb; /* gray-200 */
             border-bottom: 1px solid #e5e7eb;
@@ -62,6 +58,7 @@
         </header>
 
         <main>
+            <!-- File Upload Section -->
             <div id="file-upload-section" class="mb-8">
                 <div id="file-drop-area" class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center bg-white shadow-sm">
                     <input type="file" id="file-input" multiple accept=".annot" class="hidden" disabled>
@@ -77,6 +74,7 @@
                 </div>
             </div>
             
+            <!-- Staging Area for Uploaded Files -->
             <div id="staging-area" class="mb-8">
                 <h2 class="text-2xl font-bold text-gray-900 mb-4">Preview Upload</h2>
                 <div class="bg-white shadow-md rounded-lg overflow-x-auto">
@@ -102,6 +100,7 @@
             </div>
 
 
+            <!-- Messages and Loaders -->
             <div id="error-message" class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg relative mb-6" role="alert">
                 <strong class="font-bold">Error:</strong>
                 <span class="block sm:inline" id="error-text"></span>
@@ -111,6 +110,7 @@
                 <p class="mt-4 text-gray-600">Loading annotations from database...</p>
             </div>
 
+            <!-- Data Table Section -->
             <div id="data-section" class="hidden">
                  <div class="flex flex-col md:flex-row justify-between md:items-center mb-4 gap-4">
                     <h2 class="text-2xl font-bold text-gray-900">Shared Annotation Database</h2>
@@ -118,25 +118,13 @@
                         Export All as CSV
                     </button>
                 </div>
-                <div class="bg-white shadow-md rounded-lg overflow-x-auto">
-                    <table id="results-table" class="min-w-full">
-                        <thead class="bg-gray-50">
-                            <tr>
-                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Side</th>
-                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Annotation</th>
-                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ci Score</th>
-                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
-                                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Uploader ID</th>
-                            </tr>
-                        </thead>
-                        <tbody id="results-body" class="bg-white divide-y divide-gray-200">
-                        </tbody>
-                    </table>
-                </div>
+                 <!-- Container for dynamically generated tables -->
+                <div id="database-content"></div>
             </div>
         </main>
     </div>
 
+    <!-- Confirmation Modal -->
     <div id="confirm-modal" class="modal-overlay">
         <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-sm">
             <h3 class="text-lg font-bold mb-4" id="modal-title">Confirm Deletion</h3>
@@ -167,7 +155,7 @@
         // ----------------------------------------------------
 
         // --- DOM Element References ---
-        const resultsTableBody = document.getElementById('results-body');
+        const databaseContent = document.getElementById('database-content');
         const fileDropArea = document.getElementById('file-drop-area');
         const fileInput = document.getElementById('file-input');
         const fileLabel = document.getElementById('file-label');
@@ -365,41 +353,19 @@
 
             return allAnnotations;
         }
-
-        // --- IHI Status Calculation (Mode Logic) ---
-        function calculateIHIStatus(annotationsForFile) {
+        
+        // --- Overall Status Calculation ---
+        function calculateOverallFileStatus(annotationsForFile) {
             if (!annotationsForFile || annotationsForFile.length === 0) {
-                return 'N/A';
+                return { left: 'N/A', right: 'N/A' };
             }
 
-            // Helper to determine status for the annotations on a single slice
-            const getStatusForSingleSlice = (sliceAnnotations) => {
-                const numericAnnotations = sliceAnnotations
-                    .map(a => a.annotation)
-                    .filter(a => typeof a === 'number' && !isNaN(a));
+            const statusRegex = /\(([^)]+)\)/;
 
-                if (numericAnnotations.length === 0) return 'Normal';
-                if (numericAnnotations.every(a => a === 1)) return 'Normal';
-                if (numericAnnotations.every(a => a === 3)) return 'Complete IHI';
-                return 'Partial IHI';
-            };
-
-            // Helper to determine the "average" (most frequent) status for a whole side
-            const getOverallSideStatus = (sideAnnotations) => {
-                if (sideAnnotations.length === 0) return 'Normal';
-
-                // 1. Group the side's annotations by slice number
-                const slices = sideAnnotations.reduce((acc, curr) => {
-                    (acc[curr.slice] = acc[curr.slice] || []).push(curr);
-                    return acc;
-                }, {});
-
-                // 2. Determine the IHI status for each slice
-                const sliceStatuses = Object.values(slices).map(getStatusForSingleSlice);
-                if (sliceStatuses.length === 0) return 'Normal';
-
-                // 3. Count the occurrences of each status to find the most frequent one (the mode)
-                const counts = sliceStatuses.reduce((acc, status) => {
+            const getMode = (statuses) => {
+                if (statuses.length === 0) return 'Normal';
+                
+                const counts = statuses.reduce((acc, status) => {
                     acc[status] = (acc[status] || 0) + 1;
                     return acc;
                 }, {});
@@ -415,28 +381,42 @@
                     }
                 }
                 
-                // 4. If there's a tie, use severity to break it. Otherwise, return the most frequent status.
                 if (modes.includes('Complete IHI')) return 'Complete IHI';
                 if (modes.includes('Partial IHI')) return 'Partial IHI';
                 return modes[0] || 'Normal';
             };
 
-            const leftAnnotations = annotationsForFile.filter(a => a.side === 'Left');
-            const rightAnnotations = annotationsForFile.filter(a => a.side === 'Right');
+            const slices = annotationsForFile.reduce((acc, curr) => {
+                if (!acc[curr.slice]) {
+                    acc[curr.slice] = { leftTotal: curr.leftTotal, rightTotal: curr.rightTotal };
+                }
+                return acc;
+            }, {});
 
-            const leftStatus = getOverallSideStatus(leftAnnotations);
-            const rightStatus = getOverallSideStatus(rightAnnotations);
+            const leftSliceStatuses = [];
+            const rightSliceStatuses = [];
 
-            // Combine Left and Right statuses using a severity hierarchy
-            if (leftStatus === 'Complete IHI' || rightStatus === 'Complete IHI') return 'Complete IHI';
-            if (leftStatus === 'Partial IHI' || rightStatus === 'Partial IHI') return 'Partial IHI';
-            return 'Normal';
+            for (const sliceNum in slices) {
+                const leftMatch = slices[sliceNum].leftTotal.match(statusRegex);
+                if (leftMatch && leftMatch[1]) {
+                    leftSliceStatuses.push(leftMatch[1]);
+                }
+                const rightMatch = slices[sliceNum].rightTotal.match(statusRegex);
+                if (rightMatch && rightMatch[1]) {
+                    rightSliceStatuses.push(rightMatch[1]);
+                }
+            }
+
+            const leftMode = getMode(leftSliceStatuses);
+            const rightMode = getMode(rightSliceStatuses);
+
+            return { left: leftMode, right: rightMode };
         }
 
 
         // --- Display Logic ---
         function renderTable() {
-            resultsTableBody.innerHTML = '';
+            databaseContent.innerHTML = '';
             if (allAnnotations.length === 0) return;
 
             const groupedByFile = allAnnotations.reduce((acc, curr) => {
@@ -451,23 +431,49 @@
                 const userOwnsFile = annotationsInFile.every(item => item.uploaderId === currentUserId);
 
                 const displayName = filename.replace(/\.annot$/, '');
-                const ihiStatus = calculateIHIStatus(annotationsInFile);
-                const statusHtml = `<span class="font-semibold text-red-600 ml-3">(${ihiStatus})</span>`;
+                const overallStatus = calculateOverallFileStatus(annotationsInFile);
                 
-                let fileActionsHtml = `<div class="inline-flex items-center ml-4 gap-3">`;
-                fileActionsHtml += `<button data-filename="${filename}" class="export-file-btn bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold py-1 px-3 rounded-md shadow-sm">Export</button>`;
+                // Create File Header
+                const fileHeader = document.createElement('div');
+                fileHeader.className = 'flex justify-between items-center bg-gray-300 p-3 rounded-t-lg mt-8';
+                
+                const titleSpan = document.createElement('span');
+                titleSpan.className = 'text-lg font-extrabold text-gray-900 flex items-center';
+                titleSpan.innerHTML = `${displayName} <span class="font-semibold text-red-600 ml-4">Overall Average - Right (${overallStatus.right}) Left (${overallStatus.left})</span>`;
+                
+                const actionsDiv = document.createElement('div');
+                actionsDiv.className = 'inline-flex items-center gap-3';
+                actionsDiv.innerHTML = `<button data-filename="${filename}" class="export-file-btn bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold py-1 px-3 rounded-md shadow-sm">Export</button>`;
                 if (userOwnsFile) {
-                    fileActionsHtml += `<button data-filename="${filename}" class="delete-file-btn text-red-600 hover:text-red-900 text-xs font-semibold">Delete</button>`;
+                    actionsDiv.innerHTML += `<button data-filename="${filename}" class="delete-file-btn text-red-600 hover:text-red-900 text-xs font-semibold">Delete</button>`;
                 }
-                fileActionsHtml += `</div>`;
 
-                const fileTitleRow = document.createElement('tr');
-                fileTitleRow.classList.add('file-title-row');
-                fileTitleRow.innerHTML = `<td colspan="5" class="px-6 py-2 text-lg font-extrabold text-gray-900 flex justify-between items-center">
-                                            <span class="flex items-center">${displayName} ${statusHtml}</span>
-                                            ${fileActionsHtml}
-                                          </td>`;
-                resultsTableBody.appendChild(fileTitleRow);
+                fileHeader.appendChild(titleSpan);
+                fileHeader.appendChild(actionsDiv);
+                databaseContent.appendChild(fileHeader);
+
+                // Create Table for the file
+                const table = document.createElement('table');
+                table.className = 'min-w-full bg-white shadow-md rounded-b-lg';
+                
+                const thead = document.createElement('thead');
+                thead.className = 'bg-gray-50';
+                thead.innerHTML = `
+                    <tr>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Side</th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Annotation</th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ci Score</th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Uploader ID</th>
+                    </tr>
+                `;
+                table.appendChild(thead);
+
+                const tbody = document.createElement('tbody');
+                tbody.className = 'divide-y divide-gray-200';
+                table.appendChild(tbody);
+                databaseContent.appendChild(table);
+
 
                 const groupedBySlice = annotationsInFile.reduce((acc, curr) => {
                     (acc[curr.slice] = acc[curr.slice] || []).push(curr);
@@ -492,7 +498,7 @@
                                 <span class="font-semibold text-green-600">Right:</span> ${rightTotal}
                             </div>
                         </td>`;
-                    resultsTableBody.appendChild(sliceTitleRow);
+                    tbody.appendChild(sliceTitleRow);
                     
                     annotationsInSlice.sort((a,b) => {
                         if (a.side < b.side) return -1;
@@ -509,7 +515,7 @@
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${item.description}</td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 truncate" style="max-width: 150px;" title="${item.uploaderId}">${item.uploaderId}</td>
                         `;
-                        resultsTableBody.appendChild(row);
+                        tbody.appendChild(row);
                     });
                 });
             });
@@ -561,7 +567,7 @@
         fileDropArea.addEventListener('drop', (e) => { e.preventDefault(); fileDropArea.classList.remove('dragover'); if (!fileInput.disabled) handleFiles(e.dataTransfer.files); });
         fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
         
-        resultsTableBody.addEventListener('click', (e) => {
+        databaseContent.addEventListener('click', (e) => {
             const deleteBtn = e.target.closest('.delete-file-btn');
             if (deleteBtn) {
                 fileToDelete = deleteBtn.getAttribute('data-filename');
