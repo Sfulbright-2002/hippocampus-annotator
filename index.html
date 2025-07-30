@@ -62,7 +62,6 @@
         </header>
 
         <main>
-            <!-- File Upload Section -->
             <div id="file-upload-section" class="mb-8">
                 <div id="file-drop-area" class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center bg-white shadow-sm">
                     <input type="file" id="file-input" multiple accept=".annot" class="hidden" disabled>
@@ -78,7 +77,6 @@
                 </div>
             </div>
             
-            <!-- Staging Area for Uploaded Files -->
             <div id="staging-area" class="mb-8">
                 <h2 class="text-2xl font-bold text-gray-900 mb-4">Preview Upload</h2>
                 <div class="bg-white shadow-md rounded-lg overflow-x-auto">
@@ -104,7 +102,6 @@
             </div>
 
 
-            <!-- Messages and Loaders -->
             <div id="error-message" class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg relative mb-6" role="alert">
                 <strong class="font-bold">Error:</strong>
                 <span class="block sm:inline" id="error-text"></span>
@@ -114,7 +111,6 @@
                 <p class="mt-4 text-gray-600">Loading annotations from database...</p>
             </div>
 
-            <!-- Data Table Section -->
             <div id="data-section" class="hidden">
                  <div class="flex flex-col md:flex-row justify-between md:items-center mb-4 gap-4">
                     <h2 class="text-2xl font-bold text-gray-900">Shared Annotation Database</h2>
@@ -141,7 +137,6 @@
         </main>
     </div>
 
-    <!-- Confirmation Modal -->
     <div id="confirm-modal" class="modal-overlay">
         <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-sm">
             <h3 class="text-lg font-bold mb-4" id="modal-title">Confirm Deletion</h3>
@@ -371,6 +366,38 @@
             return allAnnotations;
         }
 
+        // --- IHI Status Calculation ---
+        function calculateIHIStatus(annotationsForFile) {
+            if (!annotationsForFile || annotationsForFile.length === 0) {
+                return 'N/A';
+            }
+
+            const getSideStatus = (sideAnnotations) => {
+                if (sideAnnotations.length === 0) return 'Normal';
+                
+                const numericAnnotations = sideAnnotations
+                    .map(a => a.annotation)
+                    .filter(a => typeof a === 'number' && !isNaN(a));
+
+                if (numericAnnotations.length === 0) return 'Normal';
+
+                if (numericAnnotations.every(a => a === 1)) return 'Normal';
+                if (numericAnnotations.every(a => a === 3)) return 'Complete IHI';
+                return 'Partial IHI';
+            };
+
+            const leftAnnotations = annotationsForFile.filter(a => a.side === 'Left');
+            const rightAnnotations = annotationsForFile.filter(a => a.side === 'Right');
+            const leftStatus = getSideStatus(leftAnnotations);
+            const rightStatus = getSideStatus(rightAnnotations);
+
+            // Severity hierarchy: Complete > Partial > Normal
+            if (leftStatus === 'Complete IHI' || rightStatus === 'Complete IHI') return 'Complete IHI';
+            if (leftStatus === 'Partial IHI' || rightStatus === 'Partial IHI') return 'Partial IHI';
+            return 'Normal';
+        }
+
+
         // --- Display Logic ---
         function renderTable() {
             resultsTableBody.innerHTML = '';
@@ -387,13 +414,22 @@
                 const annotationsInFile = groupedByFile[filename];
                 const userOwnsFile = annotationsInFile.every(item => item.uploaderId === currentUserId);
 
+                const ihiStatus = calculateIHIStatus(annotationsInFile);
+                const ihiStatusHtml = `<span class="font-semibold text-red-600 ml-3">(${ihiStatus})</span>`;
+                
+                let fileActionsHtml = `<div class="inline-flex items-center ml-4 gap-3">`;
+                fileActionsHtml += `<button data-filename="${filename}" class="export-file-btn bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold py-1 px-3 rounded-md shadow-sm">Export</button>`;
+                if (userOwnsFile) {
+                    fileActionsHtml += `<button data-filename="${filename}" class="delete-file-btn text-red-600 hover:text-red-900 text-xs font-semibold">Delete</button>`;
+                }
+                fileActionsHtml += `</div>`;
+
                 const fileTitleRow = document.createElement('tr');
                 fileTitleRow.classList.add('file-title-row');
-                let deleteFileButtonHtml = '';
-                if (userOwnsFile) {
-                    deleteFileButtonHtml = `<button data-filename="${filename}" class="delete-file-btn text-red-600 hover:text-red-900 text-xs font-normal ml-4">(Delete Entire File)</button>`;
-                }
-                fileTitleRow.innerHTML = `<td colspan="5" class="px-6 py-2 text-lg font-extrabold text-gray-900">${filename} ${deleteFileButtonHtml}</td>`;
+                fileTitleRow.innerHTML = `<td colspan="5" class="px-6 py-2 text-lg font-extrabold text-gray-900 flex justify-between items-center">
+                                            <span class="flex items-center">${filename} ${ihiStatusHtml}</span>
+                                            ${fileActionsHtml}
+                                          </td>`;
                 resultsTableBody.appendChild(fileTitleRow);
 
                 const groupedBySlice = annotationsInFile.reduce((acc, curr) => {
@@ -480,7 +516,7 @@
         function enableFileUpload() {
             fileInput.disabled = false;
             fileLabel.classList.remove('cursor-not-allowed', 'opacity-50');
-            uploadText.textContent = 'Click to upload';
+            uploadText.innerHTML = '<span class="font-semibold text-sky-600">Click to upload</span> or drag and drop';
         }
 
         fileDropArea.addEventListener('dragover', (e) => { e.preventDefault(); if (!fileInput.disabled) fileDropArea.classList.add('dragover'); });
@@ -489,10 +525,20 @@
         fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
         
         resultsTableBody.addEventListener('click', (e) => {
-            if (e.target.classList.contains('delete-file-btn')) {
-                fileToDelete = e.target.getAttribute('data-filename');
+            const deleteBtn = e.target.closest('.delete-file-btn');
+            if (deleteBtn) {
+                fileToDelete = deleteBtn.getAttribute('data-filename');
                 modalText.textContent = `Are you sure you want to delete all entries for the file "${fileToDelete}"? This action cannot be undone.`;
                 confirmModal.style.display = 'flex';
+                return;
+            }
+
+            const exportFileBtn = e.target.closest('.export-file-btn');
+            if (exportFileBtn) {
+                const filename = exportFileBtn.getAttribute('data-filename');
+                const annotationsForFile = allAnnotations.filter(a => a.filename === filename);
+                const safeFilename = filename.replace(/\.annot$/, '');
+                exportAnnotationsToCsv(annotationsForFile, `${safeFilename}_export.csv`);
             }
         });
 
@@ -539,11 +585,15 @@
         function hideError() { errorMessageDiv.style.display = 'none'; }
 
         // --- CSV Export ---
-        exportBtn.addEventListener('click', () => {
-            if (allAnnotations.length === 0) { showError("No data to export."); return; }
+        function exportAnnotationsToCsv(annotationsToExport, downloadFilename) {
+            if (annotationsToExport.length === 0) {
+                showError("No data to export.");
+                return;
+            }
+            hideError();
             const headers = ['Uploader_ID', 'Filename', 'Slice', 'Side', 'Annotation', 'Ci_Score', 'Description', 'Left_Total', 'Right_Total'];
-            
-            allAnnotations.sort((a, b) => {
+
+            const sortedAnnotations = [...annotationsToExport].sort((a, b) => {
                 if (a.filename < b.filename) return -1;
                 if (a.filename > b.filename) return 1;
                 if (a.slice < b.slice) return -1;
@@ -555,7 +605,7 @@
 
             const csvContent = [
                 headers.join(','),
-                ...allAnnotations.map(row => [
+                ...sortedAnnotations.map(row => [
                     row.uploaderId || 'N/A',
                     row.filename,
                     row.slice,
@@ -567,14 +617,19 @@
                     `"${(row.rightTotal || 'N/A').replace(/"/g, '""')}"`
                 ].join(','))
             ].join('\n');
+
             const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
             const link = document.createElement('a');
             const url = URL.createObjectURL(blob);
             link.setAttribute('href', url);
-            link.setAttribute('download', 'hippocampus_annotation_database.csv');
+            link.setAttribute('download', downloadFilename);
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
+        }
+
+        exportBtn.addEventListener('click', () => {
+            exportAnnotationsToCsv(allAnnotations, 'hippocampus_annotation_database.csv');
         });
 
         // --- Start the application ---
