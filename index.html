@@ -491,12 +491,8 @@
                     const leftTotal = firstItem.leftTotal || 'N/A';
                     const rightTotal = firstItem.rightTotal || 'N/A';
 
-                    // Unique ID for this slice's data rows
-                    const sliceDataClass = `slice-data-${filename.replace(/[^a-zA-Z0-9]/g, '')}-${slice}`;
-
                     const sliceTitleRow = document.createElement('tr');
                     sliceTitleRow.classList.add('slice-title-row');
-                    sliceTitleRow.dataset.toggleTarget = `.${sliceDataClass}`;
                     sliceTitleRow.innerHTML = `
                         <td colspan="5" class="px-6 py-3">
                             <div class="flex justify-between items-center">
@@ -518,9 +514,12 @@
                         return a.annotation - b.annotation;
                     });
 
+                    const sliceRowsContainer = document.createElement('tbody');
+                    sliceTitleRow.insertAdjacentElement('afterend', sliceRowsContainer);
+                    
                     annotationsInSlice.forEach(item => {
                         const row = document.createElement('tr');
-                        row.classList.add(sliceDataClass, 'hidden'); // Add class and hide by default
+                        row.classList.add('hidden'); // Hide by default
                         row.innerHTML = `
                             <td class="px-6 py-4 whitespace-nowrap text-sm font-medium ${item.side === 'Left' ? 'text-blue-600' : 'text-green-600'}">${item.side}</td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${item.annotation}</td>
@@ -528,7 +527,7 @@
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${item.description}</td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500 truncate" style="max-width: 150px;" title="${item.uploaderId}">${item.uploaderId}</td>
                         `;
-                        tbody.appendChild(row);
+                        tbody.appendChild(row); // Append to the main tbody
                     });
                 });
             });
@@ -581,28 +580,21 @@
         fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
         
         databaseContent.addEventListener('click', (e) => {
-            // Handle Slice Toggling
             const sliceHeader = e.target.closest('.slice-title-row');
             if (sliceHeader) {
-                const targetSelector = sliceHeader.dataset.toggleTarget;
                 const icon = sliceHeader.querySelector('.toggle-icon');
-                const dataRows = databaseContent.querySelectorAll(targetSelector);
+                let nextRow = sliceHeader.nextElementSibling;
                 
-                sliceHeader.classList.toggle('is-expanded');
-                
-                dataRows.forEach(row => {
-                    row.classList.toggle('hidden');
-                });
+                const isExpanded = sliceHeader.classList.toggle('is-expanded');
+                icon.innerHTML = isExpanded ? '▼' : '►';
 
-                if (sliceHeader.classList.contains('is-expanded')) {
-                    icon.innerHTML = '▼';
-                } else {
-                    icon.innerHTML = '►';
+                while (nextRow && !nextRow.classList.contains('slice-title-row')) {
+                    nextRow.classList.toggle('hidden', !isExpanded);
+                    nextRow = nextRow.nextElementSibling;
                 }
-                return; // Prevent other handlers from firing
+                return;
             }
 
-            // Handle Deletion
             const deleteBtn = e.target.closest('.delete-file-btn');
             if (deleteBtn) {
                 fileToDelete = deleteBtn.getAttribute('data-filename');
@@ -611,7 +603,6 @@
                 return;
             }
 
-            // Handle Per-File Export
             const exportFileBtn = e.target.closest('.export-file-btn');
             if (exportFileBtn) {
                 const filename = exportFileBtn.getAttribute('data-filename');
